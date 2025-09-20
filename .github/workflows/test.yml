@@ -1,0 +1,83 @@
+name: Test Actions
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Odoo ${{ matrix.odoo_major }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        odoo_major: [17, 18]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
+          POSTGRES_DB: odoo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U odoo" --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odoo ${{ matrix.odoo_major }} prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl postgresql-client
+          curl -sSLo /tmp/odoo.deb "https://nightly.odoo.com/${{ matrix.odoo_major }}.0/nightly/deb/odoo_${{ matrix.odoo_major }}.0.latest_all.deb"
+          sudo dpkg -i /tmp/odoo.deb || sudo apt-get install -y -f
+          sudo dpkg -i /tmp/odoo.deb
+
+      - name: Wait for PostgreSQL
+        env:
+          PGPASSWORD: odoo
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h 127.0.0.1 -p 5432 -U odoo; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL failed to become ready" >&2
+          exit 1
+
+      - name: Install Odoo database
+        id: install_odoo
+        uses: ./.github/actions/install-odoo
+        with:
+          db_host: 127.0.0.1
+          db_port: 5432
+          pguser: odoo
+          pgpassword: odoo
+          install_modules: base
+          demo: 'false'
+
+      - name: Start Odoo server
+        id: start_odoo
+        uses: ./.github/actions/start-odoo
+        with:
+          db_host: 127.0.0.1
+          db_port: 5432
+          pguser: odoo
+          pgpassword: odoo
+          wait_ready: 'true'
+          without_demo: 'true'
+          data_dir: ${{ steps.install_odoo.outputs['data-dir'] }}
+          install_modules: base
+
+      - name: Show Odoo log tail
+        if: always()
+        run: |
+          echo "--- Tail of Odoo log ---"
+          tail -n 100 "${{ steps.start_odoo.outputs['log-path'] }}" || echo "Log file missing"

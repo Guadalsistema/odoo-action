@@ -1,0 +1,170 @@
+name: "Start Odoo Server"
+
+description: "A reusable GitHub Action to start Odoo server in the background."
+
+inputs:
+  db_host:
+    description: "The database host."
+    required: false
+    default: "localhost"
+  
+  db_port:
+    description: "The database port."
+    required: false
+    default: "5432"
+
+  odoo_port:
+    description: "The port where Odoo will listen."
+    required: false
+    default: "8069"
+
+  gevent_port:
+    description: "The port where Odoo's gevent server will listen."
+    required: false
+    default: "8072"
+  
+  pguser:
+    description: "The PostgreSQL user."
+    required: false
+    default: "odoo"
+  
+  pgpassword:
+    description: "The PostgreSQL password."
+    required: false
+    default: "odoo"
+
+  without_demo:
+    description: "Whether to include demo data (true/false)."
+    required: false
+    default: "true"
+
+  wait_ready:
+    description: "Wait until odoo is ready to receive petitions"
+    required: false
+    default: "true"
+
+  addons_path:
+    description: "Path to additional Odoo addons, if any."
+    required: false
+    default: ""
+
+  log_path:
+    description: "Path to Odoo log file (can be empty to use default)."
+    required: false
+    default: ""  # If not provided, will fallback to runtime log
+
+  data_dir:
+    description: "Path to Odoo data directory (can be empty to use default)."
+    required: false
+    default: ""  # If not provided, will fallback to runtime temp dir
+
+  install_modules:
+    description: "Comma-separated list of Odoo modules to install after starting the server."
+    required: false
+    default: ""  # No modules installed by default
+
+outputs:
+  pid-file:
+    description: "Path to the Odoo PID file."
+    value: "${{ steps.start.outputs['pid-file'] }}"
+
+  log-path:
+    description: "Path to the Odoo log file."
+    value: "${{ steps.start.outputs['log-path'] }}"
+
+  data-dir:
+    description: "Path to the Odoo data directory used."
+    value: "${{ steps.start.outputs['data-dir'] }}"
+
+
+runs:
+  using: "composite"
+  steps:
+    - id: start
+      name: Start Odoo in background
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        LOG="${{ inputs.log_path }}"
+        if [[ -z "$LOG" ]]; then
+          LOG="${{ runner.temp }}/odoo.log"
+        fi
+        : > "$LOG"
+
+        DATA_DIR="${{ inputs.data_dir }}"
+        if [[ -z "$DATA_DIR" ]]; then
+          DATA_DIR="${{ env.DATA_DIR }}"
+        fi
+        if [[ -z "$DATA_DIR" ]]; then
+          DATA_DIR="${{ runner.temp }}/odoo-data"
+        fi
+        mkdir -p "$DATA_DIR"
+
+        ADDONS_PATH_OPTION=""
+        if [[ -n "${{ inputs.addons_path }}" ]]; then
+          ADDONS_PATH_OPTION="--addons-path=${{ inputs.addons_path }}"
+        fi
+
+        INSTALL_MODULES_OPTION=""
+        INSTALL_MODULES_RAW="${{ inputs.install_modules }}"
+        if [[ -n "$INSTALL_MODULES_RAW" ]]; then
+          INSTALL_MODULES=$(printf '%s' "$INSTALL_MODULES_RAW" | tr '\n' ',' | tr -s ' \t,' ',' | sed 's/^,//;s/,$//')
+          if [[ -n "$INSTALL_MODULES" ]]; then
+            INSTALL_MODULES_OPTION="-i $INSTALL_MODULES"
+          fi
+        fi
+
+        WITHOUT_DEMO_RAW="${{ inputs.without_demo }}"
+        WITHOUT_DEMO=$(printf '%s' "$WITHOUT_DEMO_RAW" | tr '[:upper:]' '[:lower:]')
+        if [[ "$WITHOUT_DEMO" != "true" && "$WITHOUT_DEMO" != "false" ]]; then
+          WITHOUT_DEMO=true
+        fi
+
+        nohup odoo \
+          -d odoo \
+          --db_host="${{ inputs.db_host }}" \
+          --db_port="${{ inputs.db_port }}" \
+          --db_user="${{ inputs.pguser }}" \
+          --db_password="${{ inputs.pgpassword }}" \
+          --http-port="${{ inputs.odoo_port }}" \
+          --gevent-port="${{ inputs.gevent_port }}" \
+          --data-dir="$DATA_DIR" \
+          --db-filter='^odoo$' \
+          --http-interface=0.0.0.0 \
+          --limit-time-cpu=0 --limit-time-real=0 \
+          --without-demo="$WITHOUT_DEMO" \
+          $ADDONS_PATH_OPTION \
+          $INSTALL_MODULES_OPTION \
+          >>"$LOG" 2>&1 &
+
+        PID_PATH="${{ runner.temp }}/odoo.pid"
+        echo $! > "$PID_PATH"
+
+        echo "pid-file=$PID_PATH" >> "$GITHUB_OUTPUT"
+        echo "log-path=$LOG" >> "$GITHUB_OUTPUT"
+        echo "data-dir=$DATA_DIR" >> "$GITHUB_OUTPUT"
+        echo "DATA_DIR=$DATA_DIR" >> "$GITHUB_ENV"
+
+        sleep 2
+        ps -fp "$(cat "$PID_PATH")" || { echo "Odoo died immediately"; tail -n +1 "$LOG"; exit 1; }
+
+    - name: Wait for Odoo to be ready
+      if: ${{ inputs.wait_ready == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        LOG="${{ steps.start.outputs['log-path'] }}"
+        if [[ -z "$LOG" || ! -f "$LOG" ]]; then
+          LOG="${{ runner.temp }}/odoo.log"
+        fi
+        for i in {1..90}; do
+          if curl -sf http://127.0.0.1:8069 >/dev/null; then
+            echo "Odoo is up!"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "Odoo failed to start"
+        tail -n +1 "$LOG" || true
+        exit 1

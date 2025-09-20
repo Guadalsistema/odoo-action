@@ -1,0 +1,80 @@
+name: "Install Odoo"
+
+description: "A reusable GitHub Action to install and initialize an Odoo database."
+
+inputs:
+  db_host:
+    description: "The database host."
+    required: false
+    default: "localhost"    # Default to localhost
+  db_port:
+    description: "The database port."
+    required: false
+    default: "5432"         # Default to PostgreSQL default port
+  pguser:
+    description: "The PostgreSQL user."
+    required: false
+    default: "odoo"         # Default PostgreSQL user
+  pgpassword:
+    description: "The PostgreSQL password."
+    required: false
+    default: "odoo"         # Default password for the PostgreSQL user
+  install_modules:
+    description: "Comma-separated list of Odoo modules to install after starting the server."
+    required: false
+    default: "base"             # Base module installed by default
+  demo:
+    description: "Whether to include demo data (true/false)."
+    required: false
+    default: "true"             # Include demo data by default
+
+outputs:
+  pid-file:
+    description: "Path to the Odoo PID file."
+    value: "${{ runner.temp }}/odoo.pid"
+
+  data-dir:
+    description: "Path to the Odoo data directory used."
+    value: "${{ steps.prepare.outputs['data-dir'] }}"
+
+
+runs:
+  using: "composite"
+  steps:
+    - id: prepare
+      name: Prepare Odoo data dir
+      shell: bash
+      run: |
+        set -euo pipefail
+        DATA_DIR="${{ runner.temp }}/odoo-data"
+        mkdir -p "$DATA_DIR"
+        echo "data-dir=$DATA_DIR" >> "$GITHUB_OUTPUT"
+        echo "DATA_DIR=$DATA_DIR" >> "$GITHUB_ENV"
+
+    - name: Install base packages in Odoo
+      shell: bash
+      run: |
+        set -euo pipefail
+        DATA_DIR_VALUE="${{ steps.prepare.outputs['data-dir'] }}"
+        INSTALL_MODULES_RAW="${{ inputs.install_modules }}"
+        INSTALL_MODULES=$(printf '%s' "$INSTALL_MODULES_RAW" | tr '\n' ',' | tr -s ' \t,' ',' | sed 's/^,//;s/,$//')
+        DEMO_RAW="${{ inputs.demo }}"
+        DEMO_NORM=$(printf '%s' "$DEMO_RAW" | tr '[:upper:]' '[:lower:]')
+        if [[ "$DEMO_NORM" == "true" ]]; then
+          WITHOUT_DEMO_FLAG=false
+        else
+          WITHOUT_DEMO_FLAG=true
+        fi
+        if [[ -z "$INSTALL_MODULES" ]]; then
+          INSTALL_MODULES=base
+        fi
+        odoo \
+          -d odoo \
+          --db_host="${{ inputs.db_host }}" \
+          --db_port="${{ inputs.db_port }}" \
+          --db_user="${{ inputs.pguser }}" \
+          --db_password="${{ inputs.pgpassword }}" \
+          --data-dir="$DATA_DIR_VALUE" \
+          -i "$INSTALL_MODULES" \
+          --without-demo=$WITHOUT_DEMO_FLAG \
+          --stop-after-init
