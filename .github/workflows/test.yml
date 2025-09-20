@@ -14,7 +14,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        odoo_major: [18]
+        include:
+          - odoo_major: 17
+            http_port: 8069
+            gevent_port: 8072
+            db_port: 5432
+          - odoo_major: 18
+            http_port: 8070
+            gevent_port: 8073
+            db_port: 5433
     services:
       postgres:
         image: postgres:16
@@ -23,7 +31,7 @@ jobs:
           POSTGRES_PASSWORD: odoo
           POSTGRES_DB: odoo
         ports:
-          - 5432:5432
+          - '${{ matrix.db_port }}:5432'
         options: >-
           --health-cmd "pg_isready -U odoo" --health-interval 10s --health-timeout 5s --health-retries 5
 
@@ -39,12 +47,18 @@ jobs:
           sudo dpkg -i /tmp/odoo.deb || sudo apt-get install -y -f
           sudo dpkg -i /tmp/odoo.deb
 
+      - name: Disable distro Odoo service
+        run: |
+          sudo systemctl stop odoo || true
+          sudo systemctl disable odoo || true
+          sudo pkill -f '/usr/bin/odoo' || true
+
       - name: Wait for PostgreSQL
         env:
           PGPASSWORD: odoo
         run: |
           for i in {1..30}; do
-            if pg_isready -h 127.0.0.1 -p 5432 -U odoo; then
+            if pg_isready -h 127.0.0.1 -p ${{ matrix.db_port }} -U odoo; then
               exit 0
             fi
             sleep 2
@@ -57,7 +71,7 @@ jobs:
         uses: ./.github/actions/install-odoo
         with:
           db_host: 127.0.0.1
-          db_port: 5432
+          db_port: ${{ matrix.db_port }}
           pguser: odoo
           pgpassword: odoo
           install_modules: base
@@ -68,16 +82,18 @@ jobs:
         uses: ./.github/actions/start-odoo
         with:
           db_host: 127.0.0.1
-          db_port: 5432
+          db_port: ${{ matrix.db_port }}
           pguser: odoo
           pgpassword: odoo
           wait_ready: 'true'
           without_demo: 'true'
           data_dir: ${{ steps.install_odoo.outputs['data-dir'] }}
           install_modules: base
+          http_port: ${{ matrix.http_port }}
+          gevent_port: ${{ matrix.gevent_port }}
 
       - name: Show Odoo log tail
         if: always()
         run: |
-          echo "--- Tail of Odoo log ---"
+          echo "--- Tail of Odoo log (port ${{ matrix.http_port }}) ---"
           tail -n 100 "${{ steps.start_odoo.outputs['log-path'] }}" || echo "Log file missing"
