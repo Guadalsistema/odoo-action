@@ -13,13 +13,9 @@ inputs:
     required: false
     default: "5432"
 
-  odoo_port:
-    description: "The port where Odoo will listen."
-    required: false
-    default: "8069"
 
   gevent_port:
-    description: "The port where Odoo's gevent server will listen."
+    description: "Port where the Odoo longpolling server will listen."
     required: false
     default: "8072"
   
@@ -63,6 +59,11 @@ inputs:
     required: false
     default: ""  # No modules installed by default
 
+  http_port:
+    description: "HTTP port to expose the Odoo server."
+    required: false
+    default: "8069"
+
 outputs:
   pid-file:
     description: "Path to the Odoo PID file."
@@ -75,6 +76,14 @@ outputs:
   data-dir:
     description: "Path to the Odoo data directory used."
     value: "${{ steps.start.outputs['data-dir'] }}"
+
+  http-port:
+    description: "HTTP port where the Odoo server is listening."
+    value: "${{ steps.start.outputs['http-port'] }}"
+
+  gevent-port:
+    description: "Port where the Odoo longpolling server is listening."
+    value: "${{ steps.start.outputs['gevent-port'] }}"
 
 
 runs:
@@ -121,17 +130,42 @@ runs:
           WITHOUT_DEMO=true
         fi
 
+        HTTP_PORT_RAW="${{ inputs.http_port }}"
+        if [[ -z "$HTTP_PORT_RAW" ]]; then
+          HTTP_PORT_RAW="${{ inputs.odoo_port }}"
+        fi
+        if [[ -z "$HTTP_PORT_RAW" ]]; then
+          HTTP_PORT_RAW="8069"
+        fi
+        if [[ "$HTTP_PORT_RAW" =~ ^[0-9]+$ ]]; then
+          HTTP_PORT="$HTTP_PORT_RAW"
+        else
+          echo "Invalid http_port '$HTTP_PORT_RAW', defaulting to 8069"
+          HTTP_PORT="8069"
+        fi
+
+        GEVENT_PORT_RAW="${{ inputs.gevent_port }}"
+        if [[ -z "$GEVENT_PORT_RAW" ]]; then
+          GEVENT_PORT_RAW="8072"
+        fi
+        if [[ "$GEVENT_PORT_RAW" =~ ^[0-9]+$ ]]; then
+          GEVENT_PORT="$GEVENT_PORT_RAW"
+        else
+          echo "Invalid gevent_port '$GEVENT_PORT_RAW', defaulting to 8072"
+          GEVENT_PORT="8072"
+        fi
+
         nohup odoo \
           -d odoo \
           --db_host="${{ inputs.db_host }}" \
           --db_port="${{ inputs.db_port }}" \
           --db_user="${{ inputs.pguser }}" \
           --db_password="${{ inputs.pgpassword }}" \
-          --http-port="${{ inputs.odoo_port }}" \
-          --gevent-port="${{ inputs.gevent_port }}" \
           --data-dir="$DATA_DIR" \
           --db-filter='^odoo$' \
           --http-interface=0.0.0.0 \
+          --http-port="$HTTP_PORT" \
+          --gevent-port="$GEVENT_PORT" \
           --limit-time-cpu=0 --limit-time-real=0 \
           --without-demo="$WITHOUT_DEMO" \
           $ADDONS_PATH_OPTION \
@@ -144,7 +178,11 @@ runs:
         echo "pid-file=$PID_PATH" >> "$GITHUB_OUTPUT"
         echo "log-path=$LOG" >> "$GITHUB_OUTPUT"
         echo "data-dir=$DATA_DIR" >> "$GITHUB_OUTPUT"
+        echo "http-port=$HTTP_PORT" >> "$GITHUB_OUTPUT"
+        echo "gevent-port=$GEVENT_PORT" >> "$GITHUB_OUTPUT"
         echo "DATA_DIR=$DATA_DIR" >> "$GITHUB_ENV"
+        echo "HTTP_PORT=$HTTP_PORT" >> "$GITHUB_ENV"
+        echo "GEVENT_PORT=$GEVENT_PORT" >> "$GITHUB_ENV"
 
         sleep 2
         ps -fp "$(cat "$PID_PATH")" || { echo "Odoo died immediately"; tail -n +1 "$LOG"; exit 1; }
@@ -158,8 +196,15 @@ runs:
         if [[ -z "$LOG" || ! -f "$LOG" ]]; then
           LOG="${{ runner.temp }}/odoo.log"
         fi
+        HTTP_PORT="${{ steps.start.outputs['http-port'] }}"
+        if [[ -z "$HTTP_PORT" ]]; then
+          HTTP_PORT="${{ inputs.http_port }}"
+        fi
+        if [[ -z "$HTTP_PORT" ]]; then
+          HTTP_PORT="8069"
+        fi
         for i in {1..90}; do
-          if curl -sf http://127.0.0.1:8069 >/dev/null; then
+          if curl -sf "http://127.0.0.1:${HTTP_PORT}" >/dev/null; then
             echo "Odoo is up!"
             exit 0
           fi
